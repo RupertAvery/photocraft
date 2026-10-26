@@ -876,9 +876,29 @@ fn arrange(app: &mut PhotocraftApp, k: &str, p: &Value) -> Result<Value, String>
             app.session.set_active(doc);
             Ok(json!({"window": wid}))
         }
-        "floatAllInWindows" | "cascade" => {
+        "cascade" => {
             let n = app.session.documents().len();
             let ids: Vec<u64> = (0..n).map(|d| float_window(app, d, d)).collect();
+            Ok(json!({"windows": ids}))
+        }
+        // Every document leaves the tabs for its own window; ones already floating stay put.
+        "floatAllInWindows" => {
+            let n = app.session.documents().len();
+            let active = app.session.active_index();
+            let mut ids = Vec::new();
+            for d in 0..n {
+                if app.ui.windows.iter().any(|w| w.open && w.tab_detached && w.document == d) {
+                    continue;
+                }
+                let wid = float_window(app, d, d);
+                if let Some(w) = app.ui.windows.iter_mut().find(|w| w.id == wid) {
+                    w.tab_detached = true;
+                }
+                ids.push(wid);
+            }
+            if let Some(a) = active {
+                app.session.set_active(a);
+            }
             Ok(json!({"windows": ids}))
         }
         "matchZoom" | "matchLocation" | "matchRotation" | "matchAll" => {

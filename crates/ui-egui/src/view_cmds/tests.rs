@@ -171,7 +171,7 @@ fn arrange_layouts_floating_windows_and_matching() {
     assert_eq!((six.len(), six[1].min.x), (6, 300.0));
     menu(&mut app, &ctx, "window.arrange.floatAllInWindows", json!({})).unwrap();
     assert_eq!(app.ui.windows.len(), 3);
-    app.ui.views[2].zoom = 3.0;
+    assert!(app.ui.windows.iter().all(|w| w.tab_detached), "float all takes every document off the tabs");
     app.ui.views[2].center = [1.0, 2.0];
     menu(&mut app, &ctx, "window.arrange.matchAll", json!({})).unwrap();
     assert!(app.ui.views.iter().all(|v| v.zoom == 3.0 && v.center == [1.0, 2.0]));
