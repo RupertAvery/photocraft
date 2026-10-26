@@ -2695,6 +2695,8 @@ fn documents(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         open_on_double_click(app, ui, area);
         return;
     }
+    let docs_area = ui.available_rect_before_wrap();
+    ui.ctx().data_mut(|d| d.insert_temp(egui::Id::unique("docs-area"), docs_area));
     if !app.ui.view.hides_tabs() || opening {
         // Flat Spectrum tabs sit directly against the canvas. The parent's default vertical
         // item spacing would otherwise leave a visible gap below the tab strip (#2188).
@@ -2710,13 +2712,24 @@ fn documents(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         crate::jobs_ui::open_card(app, ui, job);
         return;
     }
-    let Some(idx) = app.session.active_index() else { return };
+    let Some(active) = app.session.active_index() else { return };
     let rect = ui.available_rect_before_wrap();
+    // A document living in its own window (a torn-off tab) is not drawn here: the main window
+    // shows a docked document, and takes the active document back when it is focused.
+    let docked = docked_document_tabs(app);
+    let Some(idx) = docked.iter().copied().find(|&d| d == active).or_else(|| docked.first().copied()) else {
+        paint_dots(ui, rect, app.session.prefs().interface.show_canvas_dots);
+        return;
+    };
+    if idx != active && ui.ctx().input(|i| i.viewport().focused == Some(true)) {
+        app.session.set_active(idx);
+    }
+    let primary = Some(idx) == app.session.active_index();
     app.last_canvas_rect = rect;
     app.drop_canvas_rect = Some(rect);
     // Window › Arrange: tiled / n-up layouts show several documents side by side; the active one
     // takes input, a click elsewhere activates that document.
-    if let Some(shown) = arranged_cells(app, rect) {
+    if let Some(shown) = arranged_cells(app, rect).filter(|_| primary && docked.len() == app.session.documents().len()) {
         app.arrange_start = shown.first().map_or(0, |(d, _)| *d);
         let t = crate::theme::Tokens::get(ui.ctx());
         for (d, cell) in shown {
@@ -2735,7 +2748,10 @@ fn documents(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         return;
     }
     let view = app.ui.views[idx].clone();
-    canvas_view(app, ui, idx, rect, view, true);
+    let v = canvas_view(app, ui, idx, rect, view, primary);
+    if !primary {
+        app.ui.views[idx] = v;
+    }
 }
 
 /// The tab strip; returns where its document tabs are.
@@ -2754,6 +2770,7 @@ fn tabs(app: &mut PhotocraftApp, ui: &mut egui::Ui) -> TabStrip {
     let mut tear_off = None;
     let (mut focus_open, mut cancel_open) = (None, None);
     let focused_open = app.jobs.focus.is_some();
+    let docked_docs = docked_document_tabs(app);
     // Layers dragged over a tab show its document (`layer_transfer`).
     let dragging = crate::layer_transfer::pointer_if_armed(app, ui.ctx());
     let mut drag_over = None;
@@ -2765,33 +2782,46 @@ fn tabs(app: &mut PhotocraftApp, ui: &mut egui::Ui) -> TabStrip {
     // after the documents.
     let opening = crate::jobs_ui::open_tabs(app);
     // Every tab's natural width, whether or not it stays on the strip.
-    let natural: Vec<f32> = app
-        .session
-        .documents()
+    let mut tab_ids = docked_docs;
+    tab_ids.extend(tab_count..tab_count + opening.len());
+    let natural: Vec<f32> = tab_ids
         .iter()
-        .map(|st| {
-            let name = studio_tab_name(app, st);
-            ui.painter().layout_no_wrap(name, font.clone(), t.text).size().x
-                + ui.painter().layout_no_wrap(format!("{}/{}", mode_label(&st.doc), st.doc.depth.bits()), meta_font.clone(), t.text_faint).size().x
-                + STUDIO_TAB_PAD
+        .filter_map(|&i| {
+            if i < tab_count {
+                let st = app.session.documents().get(i)?;
+                let name = studio_tab_name(app, st);
+                Some(ui.painter().layout_no_wrap(name, font.clone(), t.text).size().x
+                    + ui.painter().layout_no_wrap(format!("{}/{}", mode_label(&st.doc), st.doc.depth.bits()), meta_font.clone(), t.text_faint).size().x
+                    + STUDIO_TAB_PAD)
+            } else {
+                let (_, name, frac) = opening.get(i - tab_count)?;
+                Some(
+                    ui.painter().layout_no_wrap(name.clone(), font.clone(), t.text).size().x
+                        + ui.painter().layout_no_wrap(format!("{:.0}%", frac * 100.0), meta_font.clone(), t.text_faint).size().x
+                        + STUDIO_TAB_PAD,
+                )
+            }
         })
-        .chain(opening.iter().map(|(_, name, frac)| {
-            ui.painter().layout_no_wrap(name.clone(), font.clone(), t.text).size().x
-                + ui.painter().layout_no_wrap(format!("{:.0}%", frac * 100.0), meta_font.clone(), t.text_faint).size().x
-                + STUDIO_TAB_PAD
-        }))
         .collect();
-    let selected = app
+    if tab_ids.is_empty() {
+        let frame = egui::Frame::NONE.fill(t.canvas).inner_margin(egui::Margin { left: 8, right: 8, top: 6, bottom: 4 }).show(ui, |ui| {
+            ui.allocate_exact_size(egui::vec2(ui.available_width(), tab_h), Sense::hover());
+        });
+        return TabStrip { rect: frame.response.rect, tabs: doc_tabs };
+    }
+    let selected_tab = app
         .jobs
         .focus
         .and_then(|job| opening.iter().position(|(open, _, _)| *open == job))
         .map_or_else(|| app.session.active_index().unwrap_or(0), |p| tab_count + p);
+    let selected = tab_ids.iter().position(|&i| i == selected_tab).unwrap_or(0);
     let frame = egui::Frame::NONE.fill(t.canvas).inner_margin(egui::Margin { left: 8, right: 8, top: 6, bottom: 4 }).show(ui, |ui| {
         let (row, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), tab_h), Sense::hover());
         let f = fit_doc_tabs(&natural, selected, row.width());
         let mut x = row.left();
         let mut placed: Vec<(usize, Rect)> = Vec::with_capacity(f.shown.len());
-        for &(i, w) in &f.shown {
+        for &(slot, w) in &f.shown {
+            let Some(&i) = tab_ids.get(slot) else { continue };
             // The old horizontal layout put 4 pt between tabs; `w` carries it, the tab doesn't.
             let r = Rect::from_min_size(egui::pos2(x, row.top()), egui::vec2((w - STUDIO_TAB_GAP).max(8.0), row.height()));
             placed.push((i, r));
@@ -2802,7 +2832,7 @@ fn tabs(app: &mut PhotocraftApp, ui: &mut egui::Ui) -> TabStrip {
             let sel = Some(i) == active && !focused_open;
             let name = studio_tab_name(app, st);
             let meta = format!("{}/{}", mode_label(&st.doc), st.doc.depth.bits());
-            let natural_w = natural.get(i).copied().unwrap_or(0.0);
+            let natural_w = tab_natural_width(&natural, &tab_ids, i);
             let meta_g = ui.painter().layout_no_wrap(meta, meta_font.clone(), t.text_faint);
             let name_max = (r.width() - STUDIO_TAB_PAD + STUDIO_TAB_GAP - meta_g.size().x).max(1.0);
             let name_g = crate::tab_strip::elided(ui, &name, font.clone(), t.text, name_max);
@@ -2884,16 +2914,26 @@ fn tabs(app: &mut PhotocraftApp, ui: &mut egui::Ui) -> TabStrip {
             // Pinned to the strip's right end, as Photoshop's is, not after the last tab (#8290).
             let left = (row.right() - crate::tab_strip::CHEVRON_W).max(row.left());
             let r = Rect::from_min_size(egui::pos2(left, row.top()), egui::vec2(crate::tab_strip::CHEVRON_W, row.height()));
-            let labels: Vec<&str> =
-                app.session.documents().iter().map(|st| st.doc.name.as_str()).chain(opening.iter().map(|(_, name, _)| name.as_str())).collect();
+            let labels: Vec<String> = tab_ids
+                .iter()
+                .filter_map(|&i| {
+                    if i < tab_count {
+                        app.session.documents().get(i).map(|st| st.doc.name.clone())
+                    } else {
+                        opening.get(i - tab_count).map(|(_, name, _)| name.clone())
+                    }
+                })
+                .collect();
             let mut picked = None;
-            // Like Photoshop's, the menu lists every open document, not only the hidden ones, and checks
-            // the active one (#4487).
-            let every: Vec<usize> = (0..labels.len()).collect();
-            crate::tab_strip::overflow_button(ui, ui.scope_id().with("dtab-overflow"), r, tl!("More documents"), &labels, &every, Some(selected), &mut picked);
+            let label_refs: Vec<&str> = labels.iter().map(String::as_str).collect();
+            let every: Vec<usize> = (0..label_refs.len()).collect();
+            crate::tab_strip::overflow_button(ui, ui.scope_id().with("dtab-overflow"), r, tl!("More documents"), &label_refs, &every, Some(selected), &mut picked);
             match picked {
-                Some(i) if i < tab_count => activate = Some(i),
-                Some(i) => focus_open = opening.get(i - tab_count).map(|(job, _, _)| *job).or(focus_open),
+                Some(slot) => match tab_ids.get(slot).copied() {
+                    Some(i) if i < tab_count => activate = Some(i),
+                    Some(i) => focus_open = opening.get(i - tab_count).map(|(job, _, _)| *job).or(focus_open),
+                    None => {}
+                },
                 None => {}
             }
         }
@@ -3079,6 +3119,20 @@ fn fit_doc_tabs(natural: &[f32], selected: usize, avail: f32) -> crate::tab_stri
     crate::tab_strip::fit(natural, selected, avail, widest, crate::tab_strip::CHEVRON_W)
 }
 
+fn docked_document_tabs(app: &PhotocraftApp) -> Vec<usize> {
+    (0..app.session.documents().len())
+        .filter(|&doc| !app.ui.windows.iter().any(|w| w.open && w.tab_detached && w.document == doc))
+        .collect()
+}
+
+fn tab_slot(tab_ids: &[usize], tab: usize) -> Option<usize> {
+    tab_ids.binary_search(&tab).ok()
+}
+
+fn tab_natural_width(natural: &[f32], tab_ids: &[usize], tab: usize) -> f32 {
+    tab_slot(tab_ids, tab).and_then(|slot| natural.get(slot)).copied().unwrap_or(0.0)
+}
+
 /// Photoshop's tab title: "name @ 50% (Layer 1, RGB/8)", "(Layer 1, Layer Mask/8)" when the mask
 /// is targeted, "(Quick Mask/8)" in Quick Mask mode; the Background layer's name is omitted.
 fn pro_tab_title(app: &PhotocraftApp, i: usize) -> String {
@@ -3131,19 +3185,35 @@ fn pro_tabs(app: &mut PhotocraftApp, ui: &mut egui::Ui) -> TabStrip {
     // Files opening in the background (#210) are tabs too ("name (Opening… 45%)" with a progress
     // underline); they share the fit's index space, after the documents.
     let opening = crate::jobs_ui::open_tabs(app);
-    let mut titles: Vec<String> = (0..tab_count).map(|i| pro_tab_title(app, i)).collect();
-    titles.extend(opening.iter().map(|(_, name, frac)| format!("{name} ({} {:.0}%)", tl!("Opening…"), frac * 100.0)));
+    let mut tab_ids = docked_document_tabs(app);
+    tab_ids.extend(tab_count..tab_count + opening.len());
+    let titles: Vec<String> = tab_ids
+        .iter()
+        .filter_map(|&i| {
+            if i < tab_count {
+                Some(pro_tab_title(app, i))
+            } else {
+                let (_, name, frac) = opening.get(i - tab_count)?;
+                Some(format!("{name} ({} {:.0}%)", tl!("Opening…"), frac * 100.0))
+            }
+        })
+        .collect();
+    if tab_ids.is_empty() {
+        return TabStrip { rect: strip, tabs: Vec::new() };
+    }
     // Every tab's natural width, whether or not it stays on the strip.
     let natural: Vec<f32> = titles.iter().map(|title| ui.painter().layout_no_wrap(title.clone(), font.clone(), t.text).size().x + DOC_TAB_PAD).collect();
-    let selected = app
+    let selected_tab = app
         .jobs
         .focus
         .and_then(|job| opening.iter().position(|(open, _, _)| *open == job))
         .map_or_else(|| app.session.active_index().unwrap_or(0), |p| tab_count + p);
+    let selected = tab_slot(&tab_ids, selected_tab).unwrap_or(0);
     let f = fit_doc_tabs(&natural, selected, strip.width());
     let mut x = strip.left();
     let mut placed: Vec<(usize, Rect)> = Vec::with_capacity(f.shown.len());
-    for &(i, w) in &f.shown {
+    for &(slot, w) in &f.shown {
+        let Some(&i) = tab_ids.get(slot) else { continue };
         let r = Rect::from_min_size(egui::pos2(x, strip.top()), egui::vec2(w, strip.height()));
         placed.push((i, r));
         x = r.right();
@@ -3151,7 +3221,7 @@ fn pro_tabs(app: &mut PhotocraftApp, ui: &mut egui::Ui) -> TabStrip {
     let mut doc_tabs = Vec::with_capacity(tab_count);
     let (mut focus_open, mut cancel_open) = (None, None);
     for &(i, r) in placed.iter().filter(|(i, _)| *i < tab_count) {
-        let Some(title) = titles.get(i) else { continue };
+        let Some(title) = tab_slot(&tab_ids, i).and_then(|slot| titles.get(slot)) else { continue };
         let g = crate::tab_strip::elided(ui, title, font.clone(), t.text, (r.width() - DOC_TAB_PAD).max(1.0));
         let resp = ui.interact(r, ui.scope_id().with(("ptab", i)), Sense::click_and_drag());
         let sel = Some(i) == active;
@@ -3172,7 +3242,7 @@ fn pro_tabs(app: &mut PhotocraftApp, ui: &mut egui::Ui) -> TabStrip {
         xresp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, tl!("Close")));
         crate::icons::paint(ui, xr, "x", 10.0, if xresp.hovered() { t.text } else { t.text_faint });
         ui.painter().galley_with_override_text_color(at, g, if sel { t.text } else { t.text_faint });
-        let cut = natural.get(i).copied().unwrap_or(0.0) > r.width() + 0.5;
+        let cut = tab_natural_width(&natural, &tab_ids, i) > r.width() + 0.5;
         let resp = if cut { resp.on_hover_text(title.as_str()) } else { resp };
         if tab_close_clicked(&resp, &xresp) {
             close = Some(i);
@@ -3192,7 +3262,7 @@ fn pro_tabs(app: &mut PhotocraftApp, ui: &mut egui::Ui) -> TabStrip {
     }
     for &(i, r) in placed.iter().filter(|(i, _)| *i >= tab_count) {
         let Some((job, _, frac)) = opening.get(i - tab_count) else { continue };
-        let Some(title) = titles.get(i) else { continue };
+        let Some(title) = tab_slot(&tab_ids, i).and_then(|slot| titles.get(slot)) else { continue };
         let g = crate::tab_strip::elided(ui, title, font.clone(), t.text, (r.width() - DOC_TAB_PAD).max(1.0));
         let resp = ui.interact(r, ui.scope_id().with(("ptabjob", job.0)), Sense::click());
         let sel = app.jobs.focus == Some(*job);
@@ -3225,8 +3295,11 @@ fn pro_tabs(app: &mut PhotocraftApp, ui: &mut egui::Ui) -> TabStrip {
         let every: Vec<usize> = (0..labels.len()).collect();
         crate::tab_strip::overflow_button(ui, ui.scope_id().with("ptab-overflow"), r, tl!("More documents"), &labels, &every, Some(selected), &mut picked);
         match picked {
-            Some(i) if i < tab_count => activate = Some(i),
-            Some(i) => focus_open = opening.get(i - tab_count).map(|(job, _, _)| *job).or(focus_open),
+            Some(slot) => match tab_ids.get(slot).copied() {
+                Some(i) if i < tab_count => activate = Some(i),
+                Some(i) => focus_open = opening.get(i - tab_count).map(|(job, _, _)| *job).or(focus_open),
+                None => {}
+            },
             None => {}
         }
     }
@@ -6874,9 +6947,77 @@ pub(crate) fn finish_gesture(app: &mut PhotocraftApp, d: Drag) {
     }
 }
 
+/// While a torn-off window is dragged over the main window's tab strip or canvas, outline the
+/// canvas in the accent colour. Returns true when the drag ends there (the window stops moving
+/// for a moment), so the caller can return the document to the tabs.
+fn dock_hint(app: &PhotocraftApp, ctx: &egui::Context, window: u64, outer: Option<Rect>) -> bool {
+    const SETTLE: f64 = 0.12;
+    let Some(outer) = outer else { return false };
+    let key = egui::Id::unique(("docwin-drag", window));
+    let now = ctx.input(|i| i.time);
+    let prev = ctx.data(|d| d.get_temp::<(egui::Pos2, f64, bool)>(key));
+    let (mut changed_at, mut moving) = match prev {
+        Some((pos, at, moving)) if (pos - outer.min).length() <= 0.5 => (at, moving),
+        Some(_) => (now, true),
+        None => (now, false),
+    };
+    // The title bar must overlap the tab bar. Cursor and window move together while the OS drags.
+    let title = Rect::from_min_size(outer.min, egui::vec2(outer.width(), 30.0));
+    let target = match (ctx.input(|i| i.viewport().inner_rect), app.tab_strip.as_ref().map(|s| s.rect), ctx.data(|d| d.get_temp::<Rect>(egui::Id::unique("docs-area")))) {
+        (Some(main), Some(strip), Some(area)) => {
+            let title = title.translate(-main.min.to_vec2());
+            title.intersects(strip).then_some(area)
+        }
+        _ => None,
+    };
+    let mut dock = false;
+    if moving {
+        // With a global button state the release is exact; otherwise the window counts as dropped
+        // once it has stopped moving for a moment.
+        let released = match app.services.primary_button_down.as_ref() {
+            Some(down) => !down(),
+            None => now - changed_at >= SETTLE,
+        };
+        if released {
+            moving = false;
+            dock = target.is_some();
+        } else {
+            // Keep frames coming: nothing wakes the app when the button is released.
+            ctx.request_repaint();
+            if let Some(rect) = target {
+                let t = crate::theme::Tokens::get(ctx);
+                let layer = egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("docwin-dock-hint"));
+                ctx.layer_painter(layer).rect_stroke(rect, 0, Stroke::new(3.0, t.accent), egui::StrokeKind::Inside);
+            }
+        }
+    }
+    if dock {
+        changed_at = now;
+    }
+    ctx.data_mut(|d| d.insert_temp(key, (outer.min, changed_at, moving)));
+    dock
+}
+
 /// Extra OS windows showing documents (multi-window / multi-monitor).
 pub fn extra_windows(app: &mut PhotocraftApp, ctx: &egui::Context) {
     let wins = app.ui.windows.clone();
+    // Floating document windows stay above the main window while the app is in use, and drop back
+    // to normal when another application is focused, so they don't cover it. They keep their
+    // taskbar entries, grouped under the app's icon. Focus of each window is remembered from its
+    // last frame.
+    let focus_key = egui::Id::unique("docwin-focused");
+    let app_focused = ctx.input(|i| i.viewport().focused == Some(true))
+        || wins.iter().any(|w| ctx.data(|d| d.get_temp::<bool>(focus_key.with(w.id))).unwrap_or(false));
+    // Minimizing or restoring the main window does the same to every floating window.
+    let main_minimized = ctx.input(|i| i.viewport().minimized == Some(true));
+    let min_key = egui::Id::unique("docwin-main-minimized");
+    if ctx.data(|d| d.get_temp::<bool>(min_key)).unwrap_or(false) != main_minimized {
+        ctx.data_mut(|d| d.insert_temp(min_key, main_minimized));
+        for w in wins.iter().filter(|w| w.open) {
+            let vid = egui::ViewportId::from_hash_of(("docwin", w.id));
+            ctx.send_viewport_cmd_to(vid, egui::ViewportCommand::Minimized(main_minimized));
+        }
+    }
     for w in wins.into_iter().filter(|w| w.open) {
         let Some(st) = app.session.documents().get(w.document) else { continue };
         let title = format!("{} — window {}", st.doc.name, w.id);
@@ -6887,21 +7028,52 @@ pub fn extra_windows(app: &mut PhotocraftApp, ctx: &egui::Context) {
         }
         let mut view = w.view.clone();
         let mut close = false;
+        let mut outer = None;
         ctx.show_viewport_immediate(vid, builder, |ui, class| {
             if ui.ctx().input(|i| i.viewport().close_requested()) {
                 close = true;
             }
+            outer = ui.ctx().input(|i| i.viewport().outer_rect);
+            let focused = ui.ctx().input(|i| i.viewport().focused == Some(true));
+            ui.ctx().data_mut(|d| d.insert_temp(focus_key.with(w.id), focused));
+            if w.tab_detached {
+                let level_key = focus_key.with(("level", w.id));
+                if ui.ctx().data(|d| d.get_temp::<bool>(level_key)) != Some(app_focused) {
+                    ui.ctx().data_mut(|d| d.insert_temp(level_key, app_focused));
+                    let level = if app_focused { egui::WindowLevel::AlwaysOnTop } else { egui::WindowLevel::Normal };
+                    ui.ctx().send_viewport_cmd(egui::ViewportCommand::WindowLevel(level));
+                }
+            }
+            // A torn-off tab's window is where its document is worked on: focusing it makes the
+            // document active, and its canvas then takes the tools' input.
+            if w.tab_detached && ui.ctx().input(|i| i.viewport().focused == Some(true)) && app.session.active_index() != Some(w.document) {
+                app.session.set_active(w.document);
+            }
+            let primary = w.tab_detached && app.session.active_index() == Some(w.document);
             egui::CentralPanel::default().frame(egui::Frame::NONE.fill(crate::theme::Tokens::get(ui.ctx()).canvas)).show(ui, |ui| {
                 let rect = ui.available_rect_before_wrap();
-                view = canvas_view(app, ui, w.document, rect, view.clone(), false);
+                view = canvas_view(app, ui, w.document, rect, view.clone(), primary);
                 // Preferences › Zoom Resizes Windows: a zoom wraps the window around the image.
                 crate::zoom_window_fit::follow(app, ui.ctx(), class, vid, &w, &mut view, rect);
             });
         });
+        let redock = w.tab_detached && !close && dock_hint(app, ctx, w.id, outer);
+        if redock {
+            app.session.set_active(w.document);
+        }
         if let Some(win) = app.ui.windows.iter_mut().find(|x| x.id == w.id) {
             win.view = view;
-            if close {
+            if (close && !w.tab_detached) || redock {
                 win.open = false;
+            }
+        }
+        // Closing a torn-off tab's window closes its document, through the guarded File › Close
+        // (a prompt for unsaved changes). The window goes with the document; Cancel keeps both.
+        if close && w.tab_detached {
+            ctx.send_viewport_cmd_to(vid, egui::ViewportCommand::CancelClose);
+            if let Err(e) = crate::menus::invoke(app, ctx, "file.close", json!({"document": w.document})) {
+                app.ui.status = e;
+                app.ui.status_error = true;
             }
         }
     }
@@ -8222,8 +8394,8 @@ mod tests {
         }
     }
 
-    /// Dragging a tab off the strip floats its document in its own OS window instead of
-    /// reordering (#3733), in both strips; a short wobble below the strip still reorders.
+    /// Dragging a tab off the strip moves it into its own OS window and removes it from the dock
+    /// (#3733), in both strips; a short wobble below the strip still reorders.
     #[test]
     fn dragging_a_tab_off_the_strip_floats_it_in_a_window() {
         use egui_kittest::kittest::Queryable;
@@ -8234,7 +8406,7 @@ mod tests {
         assert!(torn_off(strip, egui::pos2(50.0, -TEAR_OFF - 1.0)), "dragged up, off the window's top");
         for kind in [crate::theme::ThemeKind::Studio, crate::theme::ThemeKind::Pro] {
             let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
-            for name in ["a", "b", "c"] {
+            for name in ["document-a", "document-b", "document-c"] {
                 app.run("file.new", json!({"width": 8, "height": 8, "name": name})).unwrap();
             }
             app.sync_views();
@@ -8249,7 +8421,7 @@ mod tests {
             PhotocraftApp::setup_context(&h.ctx, kind);
             h.state_mut().1 = true;
             h.run_steps(2);
-            let b = h.get_by_label_contains("b").rect();
+            let b = h.get_by_label_contains("document-b").rect();
             let target = egui::pos2(b.center().x, b.bottom() + 150.0);
             h.drag_at(b.center());
             h.run_steps(1);
@@ -8259,9 +8431,16 @@ mod tests {
             h.run_steps(2);
             let app = &h.state().0;
             let names: Vec<&str> = app.session.documents().iter().map(|d| d.doc.name.as_str()).collect();
-            assert_eq!(names, ["a", "b", "c"], "{kind:?}: tearing off doesn't reorder");
+            assert_eq!(names, ["document-a", "document-b", "document-c"], "{kind:?}: tearing off keeps the document open");
             assert_eq!(app.ui.windows.iter().map(|w| w.document).collect::<Vec<_>>(), [1], "{kind:?}: b floats in its own window");
-            assert_eq!(app.session.active_index(), Some(1), "{kind:?}: the floated document is active");
+            assert!(app.ui.windows[0].tab_detached, "{kind:?}: the floating window owns the tab");
+            assert!(h.query_by_label_contains("document-b").is_none(), "{kind:?}: the detached tab is removed from the dock");
+            assert_eq!(app.session.active_index(), Some(1), "{kind:?}: the floated document is active, so its window takes tool input");
+            h.state_mut().0.run("file.close", json!({"document": 1})).unwrap();
+            h.state_mut().0.sync_views();
+            h.run_steps(2);
+            assert!(h.state().0.ui.windows.is_empty(), "{kind:?}: closing the document drops its window instead of re-docking it");
+            assert!(h.query_by_label_contains("document-b").is_none(), "{kind:?}: and the closed document has no tab");
         }
     }
 

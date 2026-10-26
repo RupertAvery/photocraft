@@ -51,6 +51,22 @@ pub fn right_button_service() -> Option<photocraft_ui_egui::RightButtonDownFn> {
     None
 }
 
+/// Physical primary mouse button state, polled globally: the OS owns the pointer while it drags a
+/// window by its title bar, so the app gets no events for the release (Windows).
+#[cfg(target_os = "windows")]
+pub fn primary_button_service() -> Option<photocraft_ui_egui::RightButtonDownFn> {
+    use winsafe::{co, GetAsyncKeyState, GetSystemMetrics};
+    Some(Box::new(|| {
+        let swapped = GetSystemMetrics(co::SM::SWAPBUTTON) != 0;
+        GetAsyncKeyState(if swapped { co::VK::RBUTTON } else { co::VK::LBUTTON })
+    }))
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn primary_button_service() -> Option<photocraft_ui_egui::RightButtonDownFn> {
+    None
+}
+
 /// Install the AppKit tablet monitor (main thread, once winit created the shared application:
 /// from eframe's app creation, not before the event loop). Keep the result until the event loop
 /// returns. On failure this logs why: pens then paint like a mouse.

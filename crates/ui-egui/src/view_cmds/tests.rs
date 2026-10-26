@@ -456,7 +456,8 @@ fn float_in_window_takes_a_document_and_position() {
     let w = app.ui.windows.last().unwrap();
     assert_eq!(r, json!({"window": w.id}));
     assert_eq!((w.document, w.position), (1, Some([1950.0, 40.5])));
-    assert_eq!(app.session.active_index(), Some(1));
+    assert!(w.tab_detached, "Float in Window moves the document out of the docked tabs");
+    assert_eq!(app.session.active_index(), Some(1), "the floated document is active, so its window takes tool input");
     menu(&mut app, &ctx, "window.arrange.floatInWindow", json!({})).unwrap();
     assert_eq!(app.ui.windows.last().map(|w| (w.document, w.position)), Some((1, None)), "defaults: the active document, placed by the OS");
     for bad in [

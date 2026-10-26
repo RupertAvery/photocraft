@@ -35,7 +35,8 @@ The toolbar's foreground and background colour chips follow the `Tokens::round_c
 - **Photoshop layout grammar (Pro):**
   - Essentials dock order: Color | Swatches, then Properties | Adjustments, then Layers | Channels | Paths (Layers fills the remaining height).
   - Options-bar labels end with a colon ("Size:").
-  - Document tabs read "name @ 12.5% (RGB/8)".
+  - Document tabs read "name @ 12.5% (RGB/8)". Dragging a tab away from the strip moves it into a
+    separate window; closing that window closes the document (with the usual unsaved-changes prompt).
   - Toolbar tool groups carry a corner triangle.
 - **Verify every visual change** with `ui.screenshot`, at several window sizes and in every theme.
 

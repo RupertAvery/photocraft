@@ -833,7 +833,7 @@ pub(crate) fn float_window(app: &mut PhotocraftApp, doc: usize, offset: usize) -
     view.zoom_transition = None;
     view.display_camera = None;
     view.fit_pending = offset > 0 || view.fit_pending;
-    app.ui.windows.push(crate::state::DocWindow { id: wid, document: doc, view, open: true, position: None });
+    app.ui.windows.push(crate::state::DocWindow { id: wid, document: doc, view, open: true, tab_detached: false, position: None });
     wid
 }
 
@@ -871,6 +871,7 @@ fn arrange(app: &mut PhotocraftApp, k: &str, p: &Value) -> Result<Value, String>
             let wid = float_window(app, doc, 0);
             if let Some(w) = app.ui.windows.iter_mut().find(|w| w.id == wid) {
                 w.position = position;
+                w.tab_detached = true;
             }
             app.session.set_active(doc);
             Ok(json!({"window": wid}))

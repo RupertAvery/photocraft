@@ -671,6 +671,9 @@ pub struct Services {
     pub caption_style: Option<CaptionStyleFn>,
     /// Physical right mouse button or pen barrel button currently down.
     pub right_button_down: Option<RightButtonDownFn>,
+    /// Physical primary mouse button down anywhere on screen, also while the OS drags a window
+    /// (Windows). Without it, a floating window dropped on the tab strip docks once it stops moving.
+    pub primary_button_down: Option<RightButtonDownFn>,
     /// The persistent brush preset store, loading in the background (desktop; see
     /// `photocraft_engine::preset_store`). Attached to the session once it arrives; without
     /// one, brush presets are session-only unless the shell attached a store before startup.
