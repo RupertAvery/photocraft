@@ -7055,6 +7055,11 @@ pub fn extra_windows(app: &mut PhotocraftApp, ctx: &egui::Context) {
             if w.tab_detached && ui.ctx().input(|i| i.viewport().focused == Some(true)) && app.session.active_index() != Some(w.document) {
                 app.session.set_active(w.document);
             }
+            // Keys typed in this window run the same shortcuts as in the main window (⌘Z, tool
+            // letters…): the main window's input pass only sees its own viewport's events.
+            if w.tab_detached && app.fonts_ready && ui.ctx().input(|i| i.viewport().focused == Some(true)) {
+                crate::shortcuts::handle(app, ui.ctx());
+            }
             let primary = w.tab_detached && app.session.active_index() == Some(w.document);
             egui::CentralPanel::default().frame(egui::Frame::NONE.fill(crate::theme::Tokens::get(ui.ctx()).canvas)).show(ui, |ui| {
                 let rect = ui.available_rect_before_wrap();
