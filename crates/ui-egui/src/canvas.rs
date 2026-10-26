@@ -7020,7 +7020,13 @@ pub fn extra_windows(app: &mut PhotocraftApp, ctx: &egui::Context) {
     }
     for w in wins.into_iter().filter(|w| w.open) {
         let Some(st) = app.session.documents().get(w.document) else { continue };
-        let title = format!("{} — window {}", st.doc.name, w.id);
+        // The same title as the document's tab: Photoshop's in the Pro themes, the Studio tab's
+        // name and mode otherwise.
+        let title = if crate::theme::Tokens::get(ctx).pro {
+            pro_tab_title(app, w.document)
+        } else {
+            format!("{} {}/{}", studio_tab_name(app, st), mode_label(&st.doc), st.doc.depth.bits())
+        };
         let vid = egui::ViewportId::from_hash_of(("docwin", w.id));
         let mut builder = egui::ViewportBuilder::default().with_title(title).with_inner_size([800.0, 600.0]);
         if let Some([x, y]) = w.position {
